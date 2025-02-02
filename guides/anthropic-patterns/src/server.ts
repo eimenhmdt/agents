@@ -461,8 +461,9 @@ export const Evaluator = createAgent(
 export default {
   async fetch(request, env, _ctx) {
     return (
-      (await routePartykitRequest(request, env)) ||
-      new Response("Not found", { status: 404 })
+      (await routePartykitRequest(request, env, {
+        prefix: "anthropic-agent-patterns",
+      })) || new Response("Not found", { status: 404 })
     );
   },
 } satisfies ExportedHandler<Env>;

@@ -127,7 +127,8 @@ function PatternSection({
   const [isCodeExpanded, setIsCodeExpanded] = useState(false);
 
   const socket = usePartySocket({
-    party: type,
+    prefix: `anthropic-agent-patterns/${type}/${sessionId}`, // TODO: fix https://github.com/partykit/partykit/issues/935
+    // party: type,
     room: sessionId,
     onMessage: (e) => {
       const data = JSON.parse(e.data);
