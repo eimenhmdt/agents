@@ -9,6 +9,9 @@ import {
 import { createOpenAI, OpenAIProvider } from "@ai-sdk/openai";
 import { generateText, generateObject } from "ai";
 import { z } from "zod";
+import { renderToString } from "react-dom/server";
+import { Layout } from "./layout";
+import App from "./app";
 
 type Env = {
   OPENAI_API_KEY: string;
@@ -461,6 +464,22 @@ export const Evaluator = createAgent(
 
 export default {
   async fetch(request, env, _ctx) {
+    console.log("fetch", request.url);
+    const pathname = new URL(request.url).pathname;
+    if (pathname === "/") {
+      return new Response(
+        renderToString(
+          <Layout>
+            <App />
+          </Layout>
+        ),
+        {
+          headers: {
+            "Content-Type": "text/html",
+          },
+        }
+      );
+    }
     return (
       (await routePartykitRequest(request, env)) ||
       new Response("Not found", { status: 404 })
