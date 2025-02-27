@@ -36,6 +36,11 @@
       "types": "./dist/ai-chat-agent.d.ts",
       "require": "./dist/ai-chat-agent.js",
       "import": "./dist/ai-chat-agent.js"
+    },
+    "./logging": {
+      "types": "./dist/logging.d.ts",
+      "require": "./dist/logging.js",
+      "import": "./dist/logging.js"
     }
   },
   "keywords": [],

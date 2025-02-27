@@ -14,6 +14,7 @@ An AI agent transcends traditional software boundaries. It's an entity that:
 - **Agency**: Acts autonomously within its defined purpose
 - **Connection**: Communicates through multiple channels with both humans and other agents
 - **Growth**: Learns and adapts through its interactions
+- **Observability**: Logs and tracks its activity for debugging and monitoring
 
 Built on Cloudflare's global network, this framework provides agents with a reliable, distributed foundation where they can operate continuously and effectively.
 
@@ -24,6 +25,7 @@ Built on Cloudflare's global network, this framework provides agents with a reli
 3. **Natural Communication**: Interact through HTTP, WebSockets, or direct calls
 4. **Global Distribution**: Leverage Cloudflare's network for worldwide presence
 5. **Resource Harmony**: Efficient hibernation and awakening as needed
+6. **Comprehensive Logging**: Built-in logging capabilities for debugging and monitoring
 
 ---
 
@@ -416,3 +418,80 @@ We're developing new dimensions of agent capability:
 These capabilities will expand your agents' potential while maintaining their reliability and purpose.
 
 Welcome to the future of intelligent agents. Create something meaningful. 🌟
+
+### 🔍 Logging and Debugging
+
+Agents come with built-in logging capabilities to help you debug and monitor their behavior:
+
+```ts
+import { Agent, LogLevel } from "agents-sdk";
+
+export class LoggingAgent extends Agent {
+  async onRequest(request) {
+    // Access the built-in logger
+    this.logger.info("Processing request", {
+      url: request.url,
+      method: request.method,
+    });
+
+    try {
+      // Your agent logic here
+      const result = await this.processRequest(request);
+
+      this.logger.debug("Request processing complete", {
+        processingTime: performance.now() - startTime,
+      });
+
+      return new Response(JSON.stringify(result));
+    } catch (error) {
+      // Log errors with full context
+      this.logger.error("Error processing request", error, {
+        url: request.url,
+      });
+
+      return new Response("An error occurred", { status: 500 });
+    }
+  }
+
+  async onConnect(connection, ctx) {
+    // Create a connection-specific logger
+    const connLogger = this.logger.child(
+      { connectionType: "websocket" },
+      connection.id
+    );
+
+    connLogger.info("New connection established");
+  }
+}
+```
+
+You can also create and configure custom loggers:
+
+```ts
+import { createLogger, LogLevel } from "agents-sdk/logging";
+
+// Create a custom logger with specific options
+const logger = createLogger({
+  minLevel: LogLevel.DEBUG,
+  timestamps: true,
+  pretty: true,
+  defaultContext: {
+    service: "my-agent-app",
+    version: "1.0.0",
+  },
+});
+
+// Log at different levels
+logger.debug("Detailed debugging information");
+logger.info("Normal operation information");
+logger.warn("Warning conditions");
+logger.error("Error conditions", new Error("Something went wrong"));
+
+// Create child loggers for specific subsystems
+const databaseLogger = logger.child({
+  component: "database",
+});
+databaseLogger.info("Database connection established");
+```
+
+By default, agents have a pre-configured logger accessible via `this.logger` that's automatically tagged with the agent's ID.

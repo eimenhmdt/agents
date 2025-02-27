@@ -14,6 +14,10 @@ import { nanoid } from "nanoid";
 export type { Connection, WSMessage, ConnectionContext } from "partyserver";
 
 import { WorkflowEntrypoint as CFWorkflowEntrypoint } from "cloudflare:workers";
+import { AgentLogger, LogLevel, createLogger, type LoggerOptions } from "./logging";
+
+// Re-export logging utilities
+export { AgentLogger, LogLevel, createLogger, type LoggerOptions } from "./logging";
 
 /**
  * A class for creating workflow entry points that can be used with Cloudflare Workers
@@ -75,13 +79,18 @@ export class Agent<Env, State = unknown> extends Server<Env> {
   #state = DEFAULT_STATE as State;
   
   /**
+   * Logger instance for this agent
+   */
+  protected logger: AgentLogger;
+  
+  /**
    * Initial state for the Agent
    * Override to provide default state values
    */
   initialState: State = DEFAULT_STATE as State;
 
   /**
-   * Current state of the Agent
+   * Get the current state of the Agent
    */
   get state(): State {
     if (this.#state !== DEFAULT_STATE) {
@@ -159,9 +168,22 @@ export class Agent<Env, State = unknown> extends Server<Env> {
       throw e;
     }
   }
+
+  /**
+   * Constructor for the Agent class
+   * @param ctx Agent context from Durable Objects
+   * @param env Environment containing bindings
+   */
   constructor(ctx: AgentContext, env: Env) {
     super(ctx, env);
-
+    
+    // Initialize logger with agent ID
+    this.logger = createLogger({
+      defaultContext: { agent: this.constructor.name }
+    }, (ctx.id as any)?.toString());
+    
+    this.logger.debug('Agent instantiated');
+    
     this.sql`
       CREATE TABLE IF NOT EXISTS cf_agents_state (
         id TEXT PRIMARY KEY NOT NULL,
@@ -194,7 +216,7 @@ export class Agent<Env, State = unknown> extends Server<Env> {
     });
 
     const _onMessage = this.onMessage.bind(this);
-    this.onMessage = (connection: Connection, message: WSMessage) => {
+    this.onMessage = async (connection: Connection, message: WSMessage): Promise<void> => {
       if (
         typeof message === "string" &&
         message.startsWith("cf_agent_state:")
@@ -203,7 +225,7 @@ export class Agent<Env, State = unknown> extends Server<Env> {
         this.#setStateInternal(parsed.state, connection);
         return;
       }
-      _onMessage(connection, message);
+      return _onMessage(connection, message);
     };
 
     const _onConnect = this.onConnect.bind(this);
@@ -244,28 +266,59 @@ export class Agent<Env, State = unknown> extends Server<Env> {
   }
 
   /**
-   * Update the Agent's state
+   * Update the Agent's state and persist it
    * @param state New state to set
    */
   setState(state: State) {
-    this.#setStateInternal(state, "server");
+    this.logger.debug('Setting state', { 
+      previousStateKeys: Object.keys(this.#state || {}),
+      newStateKeys: Object.keys(state || {})
+    });
+    
+    this.#state = state;
+    this.sql`
+    INSERT OR REPLACE INTO cf_agents_state (id, state)
+    VALUES (${STATE_ROW_ID}, ${JSON.stringify(state)})
+  `;
+    this.sql`
+    INSERT OR REPLACE INTO cf_agents_state (id, state)
+    VALUES (${STATE_WAS_CHANGED}, ${JSON.stringify(true)})
+  `;
+    this.broadcast(
+      `cf_agent_state:` +
+        JSON.stringify({
+          type: "cf_agent_state",
+          state: state,
+        }),
+      []
+    );
+    this.onStateUpdate(state, "server");
   }
 
   /**
    * Called when the Agent's state is updated
    * @param state Updated state
-   * @param source Source of the state update ("server" or a client connection)
+   * @param source Source of the update
    */
   onStateUpdate(state: State | undefined, source: Connection | "server") {
-    // override this to handle state updates
+    // Override in subclass if needed
+    this.logger.debug('State updated', { 
+      source: typeof source === 'string' ? source : 'connection',
+      stateKeys: Object.keys(state || {})
+    });
   }
 
   /**
-   * Called when the Agent receives an email
-   * @param email Email message to process
+   * Handle incoming email messages for this Agent
+   * @param email The email message received
    */
   onEmail(email: ForwardableEmailMessage) {
-    throw new Error("Not implemented");
+    this.logger.info('Email received', {
+      from: email.from,
+      to: email.to,
+      subject: email.headers.get('subject')
+    });
+    // Override in subclass if needed
   }
   
   /**
@@ -277,17 +330,21 @@ export class Agent<Env, State = unknown> extends Server<Env> {
 
   /**
    * Schedule a task to be executed in the future
-   * @template T Type of the payload data
-   * @param when When to execute the task (Date, seconds delay, or cron expression)
+   * @param when When to execute the task (Date, seconds from now, or cron expression)
    * @param callback Name of the method to call
-   * @param payload Data to pass to the callback
-   * @returns Schedule object representing the scheduled task
+   * @param payload Data to pass to the method
+   * @returns Information about the scheduled task
    */
   async schedule<T = string>(
     when: Date | string | number,
     callback: keyof this,
     payload?: T
   ): Promise<Schedule<T>> {
+    this.logger.info('Scheduling task', { 
+      callback: callback as string,
+      when: typeof when === 'object' ? when.toISOString() : when
+    });
+    
     const id = nanoid(9);
 
     if (typeof callback !== "string") {
@@ -364,12 +421,12 @@ export class Agent<Env, State = unknown> extends Server<Env> {
   }
   
   /**
-   * Get a scheduled task by ID
-   * @template T Type of the payload data
+   * Get a specific scheduled task by ID
    * @param id ID of the scheduled task
-   * @returns The Schedule object or undefined if not found
+   * @returns The schedule information or undefined if not found
    */
   async getSchedule<T = string>(id: string): Promise<Schedule<T> | undefined> {
+    this.logger.debug('Getting schedule by ID', { scheduleId: id });
     const result = this.sql<Schedule<string>>`
       SELECT * FROM cf_agents_schedules WHERE id = ${id}
     `;
@@ -379,10 +436,9 @@ export class Agent<Env, State = unknown> extends Server<Env> {
   }
   
   /**
-   * Get scheduled tasks matching the given criteria
-   * @template T Type of the payload data
-   * @param criteria Criteria to filter schedules
-   * @returns Array of matching Schedule objects
+   * Get all scheduled tasks, optionally filtered by criteria
+   * @param criteria Optional filtering criteria
+   * @returns Array of matching scheduled tasks
    */
   getSchedules<T = string>(
     criteria: {
@@ -392,6 +448,7 @@ export class Agent<Env, State = unknown> extends Server<Env> {
       timeRange?: { start?: Date; end?: Date };
     } = {}
   ): Schedule<T>[] {
+    this.logger.debug('Getting schedules', { criteria });
     let query = "SELECT * FROM cf_agents_schedules WHERE 1=1";
     const params = [];
 
@@ -434,9 +491,10 @@ export class Agent<Env, State = unknown> extends Server<Env> {
   /**
    * Cancel a scheduled task
    * @param id ID of the task to cancel
-   * @returns true if the task was cancelled, false otherwise
+   * @returns Whether the task was successfully cancelled
    */
   async cancelSchedule(id: string): Promise<boolean> {
+    this.logger.info('Cancelling schedule', { scheduleId: id });
     this.sql`DELETE FROM cf_agents_schedules WHERE id = ${id}`;
 
     await this.scheduleNextAlarm();
@@ -460,10 +518,10 @@ export class Agent<Env, State = unknown> extends Server<Env> {
   }
 
   /**
-   * Method called when an alarm fires
-   * Executes any scheduled tasks that are due
+   * Called when the alarm fires to execute scheduled tasks
    */
   async alarm() {
+    this.logger.debug('Alarm triggered');
     const now = Math.floor(Date.now() / 1000);
 
     // Get all schedules that should be executed now
@@ -508,9 +566,70 @@ export class Agent<Env, State = unknown> extends Server<Env> {
   }
 
   /**
-   * Destroy the Agent, removing all state and scheduled tasks
+   * Handle WebSocket connections to this Agent
+   * @param connection The established WebSocket connection
+   * @param ctx Additional context for the connection
+   */
+  onConnect(connection: Connection, ctx: ConnectionContext): void | Promise<void> {
+    const connectionLogger = this.logger.child({ connectionId: connection.id });
+    connectionLogger.debug('New connection established');
+    
+    // Send initial state if it exists
+    if (this.#state && Object.keys(this.#state).length > 0) {
+      connectionLogger.debug('Sending initial state to new connection');
+      connection.send(
+        "cf_agent_state:" + JSON.stringify({ type: "cf_agent_state", state: this.#state })
+      );
+    }
+  }
+
+  /**
+   * Handle WebSocket messages sent to this Agent
+   * @param connection The WebSocket connection that sent the message
+   * @param message The message data
+   */
+  async onMessage(connection: Connection, message: WSMessage): Promise<void> {
+    const connectionLogger = this.logger.child({ connectionId: connection.id });
+    
+    try {
+      if (typeof message === "string" && message.startsWith("cf_agent_state:")) {
+        const parsedMessage = JSON.parse(message.slice(15));
+        
+        if (parsedMessage?.type === "cf_agent_state" && parsedMessage?.state) {
+          connectionLogger.debug('Received state update from client');
+          this.#state = parsedMessage.state as State;
+          this.onStateUpdate(this.#state, connection);
+          this.broadcast(
+            "cf_agent_state:" + JSON.stringify({ type: "cf_agent_state", state: this.#state }),
+            [connection.id]
+          );
+        }
+      } else {
+        connectionLogger.debug('Received message from client', { 
+          messageType: typeof message,
+          messageLength: typeof message === 'string' ? message.length : undefined
+        });
+      }
+    } catch (error) {
+      connectionLogger.error('Error processing message', error as Error, {
+        messageType: typeof message
+      });
+    }
+  }
+
+  /**
+   * Handle WebSocket close events
+   * @param connection The WebSocket connection that closed
+   */
+  onClose(connection: Connection): void | Promise<void> {
+    this.logger.debug('Connection closed', { connectionId: connection.id });
+  }
+
+  /**
+   * Clean up resources before the Agent is destroyed
    */
   async destroy() {
+    this.logger.info('Agent being destroyed');
     // drop all tables
     this.sql`DROP TABLE IF EXISTS cf_agents_state`;
     this.sql`DROP TABLE IF EXISTS cf_agents_schedules`;
